@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from analyse_with_ai import analyse_site
 from google_sheet import SheetRow, read_rows, update_rows
-from telegram import send_message
+from telegram import send_message, send_messages
 from web_reader import SiteEvidence, collect_site_evidence
 
 
@@ -95,6 +95,22 @@ def _collect_all(rows: list[SheetRow], workers: int) -> dict[int, SiteEvidence]:
     return evidence
 
 
+def _change_item(row: SheetRow, value: str) -> str:
+    return f"• {row.url}\n{value.strip()}"
+
+
+def _change_message(title: str, new: list[str], old: list[str]) -> str:
+    lines = [title, "", "Новые:"]
+    lines.extend(new or ["• Нет"])
+    lines.extend(["", "Старые:"])
+    lines.extend(old or ["• Нет"])
+    return "\n".join(lines)
+
+
+def _accepts_submissions(value: str) -> bool:
+    return value.strip().casefold().startswith("принимают")
+
+
 def run() -> int:
     spreadsheet_id = os.getenv(
         "GOOGLE_SPREADSHEET_ID",
@@ -117,8 +133,15 @@ def run() -> int:
     failures: list[str] = []
     new_items: list[str] = []
     changed_urls: list[str] = []
+    new_open_calls: list[str] = []
+    old_open_calls: list[str] = []
+    new_awards: list[str] = []
+    old_awards: list[str] = []
+    new_submissions: list[str] = []
+    old_submissions: list[str] = []
     ai_checked = 0
     unchanged = 0
+    unclear = 0
 
     for row in rows:
         evidence = evidence_by_row[row.row_number]
@@ -144,12 +167,28 @@ def run() -> int:
         site_hashes[row.url] = current_hash
 
         if not result.confident:
+            unclear += 1
             failures.append(f"{row.name or row.url}: неоднозначные данные; старые значения сохранены")
             continue
 
         proposed = (result.open_call, result.awards, result.submissions)
         if proposed != (row.open_call, row.awards, row.submissions):
             changes[row.row_number] = proposed
+        if result.open_call != row.open_call:
+            if result.open_call:
+                new_open_calls.append(_change_item(row, result.open_call))
+            if row.open_call:
+                old_open_calls.append(_change_item(row, row.open_call))
+        if result.awards != row.awards:
+            if result.awards:
+                new_awards.append(_change_item(row, result.awards))
+            if row.awards:
+                old_awards.append(_change_item(row, row.awards))
+        if result.submissions != row.submissions:
+            if _accepts_submissions(result.submissions):
+                new_submissions.append(_change_item(row, result.submissions))
+            if _accepts_submissions(row.submissions):
+                old_submissions.append(_change_item(row, row.submissions))
         new_items.extend(result.new_opportunities)
 
     if changes:
@@ -161,14 +200,21 @@ def run() -> int:
         {url: site_hash for url, site_hash in site_hashes.items() if url in active_urls},
     )
 
-    summary_lines = [
+    stats_message = "\n".join([
         f"Литературный монитор: {checked_at:%Y-%m-%d}",
         f"Проверено сайтов: {len(rows)}",
         f"Проанализировано AI: {ai_checked}",
         f"Без изменений, AI пропущен: {unchanged}",
-        f"Изменено строк: {len(changes)}",
-        f"Ошибок/нужна проверка: {len(failures)}",
+        f"Неясные данные: {unclear}",
+    ])
+    telegram_messages = [
+        stats_message,
+        _change_message("Новости по опен-коллам", new_open_calls, old_open_calls),
+        _change_message("Новости по конкурсам", new_awards, old_awards),
+        _change_message("Куда можно отправить текст", new_submissions, old_submissions),
     ]
+
+    summary_lines = [*telegram_messages, f"Изменено строк: {len(changes)}"]
     if changed_urls:
         summary_lines.append("Изменившийся SHA-256:")
         summary_lines.extend(f"• {url}" for url in changed_urls[:20])
@@ -181,9 +227,9 @@ def run() -> int:
         summary_lines.append("Не удалось надёжно проверить:")
         summary_lines.extend(f"• {item}" for item in failures[:20])
 
-    summary = "\n".join(summary_lines)
+    summary = "\n\n".join(summary_lines)
     print(summary)
-    send_message(summary)
+    send_messages(telegram_messages)
     return 0
 
 
