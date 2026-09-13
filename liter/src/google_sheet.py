@@ -18,6 +18,7 @@ class SheetRow:
     row_number: int
     name: str
     url: str
+    telegram_url: str
     open_call: str
     awards: str
     submissions: str
@@ -52,6 +53,7 @@ def read_rows(spreadsheet_id: str, sheet_name: str) -> list[SheetRow]:
                 row_number=row_number,
                 name=_cell(row, 2),
                 url=url,
+                telegram_url=_cell(row, 4),
                 open_call=_cell(row, 5),
                 awards=_cell(row, 6),
                 submissions=_cell(row, 7),

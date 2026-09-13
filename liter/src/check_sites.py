@@ -260,11 +260,43 @@ def _change_item(row: SheetRow, value: str, *, bold_labels: bool = False) -> str
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
-    lines = [title, "", "Новые:"]
+    lines = [f"<b>{html.escape(title)}</b>", "", "<b>Новые:</b>"]
     lines.extend(new or ["Нет"])
-    lines.extend(["", "Старые:"])
+    lines.extend(["", "<b>Старые:</b>"])
     lines.extend(old or ["Нет"])
     return "\n".join(lines)
+
+
+def _unclear_message(rows: list[SheetRow]) -> str:
+    lines = ["Не удалось разобраться с этими платформами:"]
+    if not rows:
+        return "\n".join([*lines, "", "Нет"])
+    for row in rows:
+        name = html.escape(row.name or row.url)
+        telegram_url = html.escape(row.telegram_url or "не указан")
+        lines.extend([
+            "",
+            f"<b>Платформа:</b> {name}",
+            f"<b>Телеграм:</b> {telegram_url}",
+        ])
+    return "\n".join(lines)
+
+
+def _stats_message(
+    checked_at: datetime,
+    *,
+    checked: int,
+    ai_checked: int,
+    unchanged: int,
+    unclear: int,
+) -> str:
+    return "\n".join([
+        f"Литературный монитор: {checked_at:%Y-%m-%d %H:%M}",
+        f"Проверено сайтов: {checked}",
+        f"Проанализировано AI: {ai_checked}",
+        f"Без изменений, AI пропущен: {unchanged}",
+        f"Неясные данные: {unclear}",
+    ])
 
 
 def _accepts_submissions(value: str) -> bool:
@@ -294,6 +326,7 @@ def run() -> int:
     new_items: list[str] = []
     changed_urls: list[str] = []
     new_submission_rows: set[int] = set()
+    unclear_rows: list[SheetRow] = []
     ai_checked = 0
     unchanged = 0
     unclear = 0
@@ -301,6 +334,8 @@ def run() -> int:
     for row in rows:
         evidence = evidence_by_row[row.row_number]
         if evidence.error or not evidence.pages:
+            unclear += 1
+            unclear_rows.append(row)
             failures.append(f"{row.name or row.url}: {evidence.error or 'нет текста'}")
             continue
 
@@ -314,6 +349,8 @@ def run() -> int:
         try:
             result = analyse_site(row, evidence, checked_at.date(), model=model)
         except Exception as exc:
+            unclear += 1
+            unclear_rows.append(row)
             failures.append(f"{row.name or row.url}: AI — {type(exc).__name__}: {exc}")
             continue
 
@@ -323,6 +360,7 @@ def run() -> int:
 
         if not result.confident:
             unclear += 1
+            unclear_rows.append(row)
             failures.append(f"{row.name or row.url}: неоднозначные данные; старые значения сохранены")
             continue
 
@@ -376,18 +414,19 @@ def run() -> int:
             target = new_submissions if row.row_number in new_submission_rows else old_submissions
             target.append(_change_item(row, submissions))
 
-    stats_message = "\n".join([
-        f"Литературный монитор: {checked_at:%Y-%m-%d}",
-        f"Проверено сайтов: {len(rows)}",
-        f"Проанализировано AI: {ai_checked}",
-        f"Без изменений, AI пропущен: {unchanged}",
-        f"Неясные данные: {unclear}",
-    ])
+    stats_message = _stats_message(
+        checked_at,
+        checked=len(rows),
+        ai_checked=ai_checked,
+        unchanged=unchanged,
+        unclear=unclear,
+    )
     telegram_messages = [
         stats_message,
         _change_message("Новости по опен-коллам", new_open_calls, old_open_calls),
         _change_message("Новости по конкурсам", new_awards, old_awards),
         _change_message("Куда можно отправить текст", new_submissions, old_submissions),
+        _unclear_message(unclear_rows),
     ]
 
     summary_lines = [*telegram_messages, f"Изменено строк: {len(changes)}"]
