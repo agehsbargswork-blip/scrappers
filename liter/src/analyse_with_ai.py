@@ -35,6 +35,14 @@ SCHEMA = {
 }
 
 
+def _normalise_opportunity(value: str) -> str:
+    """Keep cells empty when the model reports that nothing is active."""
+    value = value.strip()
+    if value.casefold().startswith("нет активных"):
+        return ""
+    return value
+
+
 def analyse_site(
     row: SheetRow,
     evidence: SiteEvidence,
@@ -53,11 +61,13 @@ def analyse_site(
 Правила:
 - Пиши по-русски.
 - open_call: только действующие открытые наборы, не премии и не конкурсы.
+  Если действующих наборов нет, верни пустую строку.
 - awards: только действующие премии, призы и конкурсы.
+  Если действующих премий, призов и конкурсов нет, верни пустую строку.
+- Никогда не пиши «Нет активных» и не добавляй дату проверки в пустые ячейки.
 - submissions: начни строго с «Принимают», «Не принимают» или «Неясно»; затем жанры,
   способ подачи, ограничения, период приёма и прямой официальный URL.
 - Для каждой возможности укажи название, дедлайн, если опубликован, и прямой URL.
-- Если активных возможностей нет, напиши «Нет активных (проверено {today.isoformat()})».
 - Не используй просроченные возможности.
 - Не делай вывод по отсутствию информации. Если доказательств недостаточно, confident=false.
 - URL должен присутствовать среди SOURCE ниже. Ничего не выдумывай.
@@ -88,8 +98,8 @@ Submissions: {row.submissions}
     payload = json.loads(response.output_text)
     return AnalysisResult(
         confident=payload["confident"],
-        open_call=payload["open_call"].strip(),
-        awards=payload["awards"].strip(),
+        open_call=_normalise_opportunity(payload["open_call"]),
+        awards=_normalise_opportunity(payload["awards"]),
         submissions=payload["submissions"].strip(),
         new_opportunities=[str(item).strip() for item in payload["new_opportunities"]],
     )
