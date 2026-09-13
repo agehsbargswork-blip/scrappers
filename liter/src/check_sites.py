@@ -96,10 +96,7 @@ def _collect_all(rows: list[SheetRow], workers: int) -> dict[int, SiteEvidence]:
 
 
 def _change_item(row: SheetRow, value: str) -> str:
-    details = " ".join(value.split())
-    if len(details) > 90:
-        details = details[:89].rstrip() + "…"
-    return f"• {row.name or row.url}: {details}\n{row.url}"
+    return f"• {row.name or row.url}\n{value.strip()}"
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
