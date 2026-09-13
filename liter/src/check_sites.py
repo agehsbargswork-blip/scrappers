@@ -116,6 +116,7 @@ def run() -> int:
     changes: dict[int, tuple[str, str, str]] = {}
     failures: list[str] = []
     new_items: list[str] = []
+    changed_urls: list[str] = []
     ai_checked = 0
     unchanged = 0
 
@@ -130,6 +131,7 @@ def run() -> int:
             unchanged += 1
             continue
 
+        changed_urls.append(row.url)
         ai_checked += 1
         try:
             result = analyse_site(row, evidence, checked_at.date(), model=model)
@@ -167,6 +169,11 @@ def run() -> int:
         f"Изменено строк: {len(changes)}",
         f"Ошибок/нужна проверка: {len(failures)}",
     ]
+    if changed_urls:
+        summary_lines.append("Изменившийся SHA-256:")
+        summary_lines.extend(f"• {url}" for url in changed_urls[:20])
+        if len(changed_urls) > 20:
+            summary_lines.append(f"• …и ещё {len(changed_urls) - 20}")
     if new_items:
         summary_lines.append("Новые возможности:")
         summary_lines.extend(f"• {item}" for item in new_items[:20])
