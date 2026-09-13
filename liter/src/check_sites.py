@@ -182,14 +182,14 @@ def _change_item(row: SheetRow, value: str, *, bold_labels: bool = False) -> str
                     line = f"<b>{prefix}</b>{line[len(prefix):]}"
                     break
         lines.append(line)
-    return f"• {name}\n\n{'\n'.join(lines)}"
+    return f"\n<b>Платформа:</b> {name}\n{'\n'.join(lines)}"
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
     lines = [title, "", "Новые:"]
-    lines.extend(new or ["• Нет"])
+    lines.extend(new or ["Нет"])
     lines.extend(["", "Старые:"])
-    lines.extend(old or ["• Нет"])
+    lines.extend(old or ["Нет"])
     return "\n".join(lines)
 
 
