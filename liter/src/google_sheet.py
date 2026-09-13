@@ -50,7 +50,7 @@ def read_rows(spreadsheet_id: str, sheet_name: str) -> list[SheetRow]:
         result.append(
             SheetRow(
                 row_number=row_number,
-                name=_cell(row, 0),
+                name=_cell(row, 2),
                 url=url,
                 open_call=_cell(row, 5),
                 awards=_cell(row, 6),
