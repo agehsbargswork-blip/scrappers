@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,7 +35,13 @@ for module_name, attributes in {
         setattr(module, attribute_name, attribute_value)
     sys.modules[module_name] = module
 
-from check_sites import _evidence_hash, _partition_opportunities  # noqa: E402
+from check_sites import (  # noqa: E402
+    _change_message,
+    _evidence_hash,
+    _partition_opportunities,
+    _stats_message,
+    _unclear_message,
+)
 
 for module_name in ("analyse_with_ai", "google_sheet", "telegram", "web_reader"):
     sys.modules.pop(module_name, None)
@@ -135,6 +142,45 @@ URL: https://example.com/new"""
 
         self.assertEqual(len(new), 1)
         self.assertEqual(len(old), 1)
+
+
+class TelegramReportTests(unittest.TestCase):
+    def test_stats_include_date_and_time(self):
+        message = _stats_message(
+            datetime(2026, 9, 13, 18, 7),
+            checked=85,
+            ai_checked=3,
+            unchanged=80,
+            unclear=2,
+        )
+        self.assertTrue(message.startswith("Литературный монитор: 2026-09-13 18:07"))
+
+    def test_section_titles_are_bold(self):
+        message = _change_message("Новости по опен-коллам", ["new"], ["old"])
+        self.assertIn("<b>Новости по опен-коллам</b>", message)
+        self.assertIn("<b>Новые:</b>", message)
+        self.assertIn("<b>Старые:</b>", message)
+
+    def test_unclear_platforms_include_telegram_from_column_e(self):
+        rows = [
+            SimpleNamespace(
+                name="Платформа & журнал",
+                url="https://example.com",
+                telegram_url="https://t.me/example",
+            ),
+            SimpleNamespace(
+                name="Без канала",
+                url="https://without.example",
+                telegram_url="",
+            ),
+        ]
+
+        message = _unclear_message(rows)
+
+        self.assertIn("<b>Платформа:</b> Платформа &amp; журнал", message)
+        self.assertIn("<b>Телеграм:</b> https://t.me/example", message)
+        self.assertIn("<b>Платформа:</b> Без канала", message)
+        self.assertIn("<b>Телеграм:</b> не указан", message)
 
 
 if __name__ == "__main__":
