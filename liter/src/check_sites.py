@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -24,6 +25,7 @@ from web_reader import SiteEvidence, collect_site_evidence
 
 RIGA = ZoneInfo("Europe/Riga")
 DEFAULT_HASH_CACHE = Path("liter/.cache/site_hashes.json")
+URL_PATTERN = re.compile(r"https?://[^\s)\]]+")
 
 
 def _required_env(name: str) -> str:
@@ -96,10 +98,12 @@ def _collect_all(rows: list[SheetRow], workers: int) -> dict[int, SiteEvidence]:
 
 
 def _change_item(row: SheetRow, value: str) -> str:
-    details = " ".join(value.split())
+    urls = URL_PATTERN.findall(value)
+    source = urls[0].rstrip(".,;") if urls else row.url
+    details = " ".join(URL_PATTERN.sub("", value).split()).strip(" -;,.[]()")
     if len(details) > 90:
         details = details[:89].rstrip() + "…"
-    return f"• {row.name or row.url}: {details}\n{row.url}"
+    return f"• {row.name or row.url}: {details}\n{source}"
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
