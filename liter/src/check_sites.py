@@ -11,6 +11,7 @@ import html
 import hashlib
 import json
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -25,6 +26,7 @@ from web_reader import SiteEvidence, collect_site_evidence
 
 RIGA = ZoneInfo("Europe/Riga")
 DEFAULT_HASH_CACHE = Path("liter/.cache/site_hashes.json")
+URL_PATTERN = re.compile(r"https?://[^\s)\]]+")
 
 
 def _required_env(name: str) -> str:
@@ -96,8 +98,35 @@ def _collect_all(rows: list[SheetRow], workers: int) -> dict[int, SiteEvidence]:
     return evidence
 
 
+def _structure_opportunities(value: str) -> str:
+    value = value.strip()
+    if any(line.startswith("Название:") for line in value.splitlines()):
+        return value
+
+    blocks: list[str] = []
+    for line in (line.strip() for line in value.splitlines() if line.strip()):
+        urls = URL_PATTERN.findall(line)
+        source = urls[-1].rstrip(".,;") if urls else "не указан"
+        body = URL_PATTERN.sub("", line).strip(" -;,.[]()")
+        parts = [part.strip(" -;,.[]()") for part in body.split(" — ", 2)]
+        title = parts[0] or "Не указано"
+        deadline = parts[1] if len(parts) > 1 and parts[1] else "не указан"
+        description = parts[2] if len(parts) > 2 and parts[2] else "Подробности — по ссылке."
+        blocks.append(
+            "\n".join([
+                f"Название: {title}",
+                f"Дедлайн: {deadline}",
+                f"Описание: {description}",
+                f"URL: {source}",
+            ])
+        )
+    return "\n\n".join(blocks)
+
+
 def _change_item(row: SheetRow, value: str, *, bold_labels: bool = False) -> str:
     name = html.escape(row.name or row.url)
+    if bold_labels:
+        value = _structure_opportunities(value)
     lines: list[str] = []
     for raw_line in value.strip().splitlines():
         line = html.escape(raw_line)
@@ -108,7 +137,7 @@ def _change_item(row: SheetRow, value: str, *, bold_labels: bool = False) -> str
                     line = f"<b>{prefix}</b>{line[len(prefix):]}"
                     break
         lines.append(line)
-    return f"• {name}\n{'\n'.join(lines)}"
+    return f"• {name}\n\n{'\n'.join(lines)}"
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
