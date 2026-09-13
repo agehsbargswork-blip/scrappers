@@ -27,6 +27,13 @@ from web_reader import SiteEvidence, collect_site_evidence
 RIGA = ZoneInfo("Europe/Riga")
 DEFAULT_HASH_CACHE = Path("liter/.cache/site_hashes.json")
 URL_PATTERN = re.compile(r"https?://[^\s)\]]+")
+MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\((https?://[^)\s]+)\)")
+DEADLINE_PATTERN = re.compile(
+    r"\bдедлайн\s*[—–:-]\s*"
+    r"((?:до\s+)?(?:\d{1,2}\s+[а-яё]+\s+\d{4}\s*(?:г(?:ода)?\.?)?"
+    r"|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|[^.;\n]+))",
+    re.IGNORECASE,
+)
 
 
 def _required_env(name: str) -> str:
@@ -103,15 +110,53 @@ def _structure_opportunities(value: str) -> str:
     if any(line.startswith("Название:") for line in value.splitlines()):
         return value
 
-    blocks: list[str] = []
+    # Old sheet values can use two or more lines for one opportunity: a title,
+    # followed by a description/deadline line that ends with the official URL.
+    # Group through the URL instead of treating every line as a separate item.
+    legacy_blocks: list[list[str]] = []
+    current_block: list[str] = []
     for line in (line.strip() for line in value.splitlines() if line.strip()):
-        urls = URL_PATTERN.findall(line)
+        current_block.append(line)
+        if URL_PATTERN.search(line):
+            legacy_blocks.append(current_block)
+            current_block = []
+    if current_block:
+        legacy_blocks.append(current_block)
+
+    blocks: list[str] = []
+    for legacy_lines in legacy_blocks:
+        raw_block = "\n".join(legacy_lines)
+        urls = URL_PATTERN.findall(raw_block)
         source = urls[-1].rstrip(".,;") if urls else "не указан"
-        body = URL_PATTERN.sub("", line).strip(" -;,.[]()")
-        parts = [part.strip(" -;,.[]()") for part in body.split(" — ", 2)]
-        title = parts[0] or "Не указано"
-        deadline = parts[1] if len(parts) > 1 and parts[1] else "не указан"
-        description = parts[2] if len(parts) > 2 and parts[2] else "Подробности — по ссылке."
+
+        clean_lines: list[str] = []
+        for line in legacy_lines:
+            line = MARKDOWN_LINK_PATTERN.sub("", line)
+            line = URL_PATTERN.sub("", line).strip(" -;,.[]()")
+            if line:
+                clean_lines.append(line)
+
+        if len(clean_lines) > 1:
+            title = clean_lines[0]
+            description = " ".join(clean_lines[1:])
+            deadline_match = DEADLINE_PATTERN.search(description)
+            if deadline_match:
+                deadline = deadline_match.group(1).strip(" -;,.[]()")
+                description = (
+                    description[: deadline_match.start()]
+                    + description[deadline_match.end() :]
+                ).strip(" -;,.[]()")
+            else:
+                deadline = "не указан"
+            description = description or "Подробности — по ссылке."
+        else:
+            body = clean_lines[0] if clean_lines else ""
+            parts = [part.strip(" -;,.[]()") for part in body.split(" — ", 2)]
+            title = parts[0] or "Не указано"
+            deadline = parts[1] if len(parts) > 1 and parts[1] else "не указан"
+            description = (
+                parts[2] if len(parts) > 2 and parts[2] else "Подробности — по ссылке."
+            )
         blocks.append(
             "\n".join([
                 f"Название: {title}",
@@ -137,14 +182,14 @@ def _change_item(row: SheetRow, value: str, *, bold_labels: bool = False) -> str
                     line = f"<b>{prefix}</b>{line[len(prefix):]}"
                     break
         lines.append(line)
-    return f"• {name}\n\n{'\n'.join(lines)}"
+    return f"\n<b>Платформа:</b> {name}\n{'\n'.join(lines)}"
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
     lines = [title, "", "Новые:"]
-    lines.extend(new or ["• Нет"])
+    lines.extend(new or ["Нет"])
     lines.extend(["", "Старые:"])
-    lines.extend(old or ["• Нет"])
+    lines.extend(old or ["Нет"])
     return "\n".join(lines)
 
 
@@ -244,8 +289,10 @@ def run() -> int:
             (row.open_call, row.awards, row.submissions),
         )
         if open_call:
-            target = new_open_calls if row.row_number in new_open_call_rows else old_open_calls
-            target.append(_change_item(row, open_call, bold_labels=True))
+            if row.row_number in new_open_call_rows:
+                new_open_calls.append(_change_item(row, open_call, bold_labels=True))
+            else:
+                old_open_calls.append(_change_item(row, open_call, bold_labels=True))
         if awards:
             target = new_awards if row.row_number in new_award_rows else old_awards
             target.append(_change_item(row, awards, bold_labels=True))
