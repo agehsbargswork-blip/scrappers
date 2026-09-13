@@ -1,0 +1,95 @@
+"""Semantic extraction of opportunities from official website text."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import date
+
+from openai import OpenAI
+
+from google_sheet import SheetRow
+from web_reader import SiteEvidence
+
+
+@dataclass(frozen=True)
+class AnalysisResult:
+    confident: bool
+    open_call: str
+    awards: str
+    submissions: str
+    new_opportunities: list[str]
+
+
+SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "confident": {"type": "boolean"},
+        "open_call": {"type": "string"},
+        "awards": {"type": "string"},
+        "submissions": {"type": "string"},
+        "new_opportunities": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["confident", "open_call", "awards", "submissions", "new_opportunities"],
+}
+
+
+def analyse_site(
+    row: SheetRow,
+    evidence: SiteEvidence,
+    today: date,
+    *,
+    model: str,
+) -> AnalysisResult:
+    pages = "\n\n".join(
+        f"SOURCE: {page.url}\nTITLE: {page.title}\nTEXT:\n{page.text}"
+        for page in evidence.pages
+    )
+    prompt = f"""Сегодня {today.isoformat()}.
+
+Проверь официальные материалы сайта и подготовь значения для трёх ячеек Google Sheet.
+
+Правила:
+- Пиши по-русски.
+- open_call: только действующие открытые наборы, не премии и не конкурсы.
+- awards: только действующие премии, призы и конкурсы.
+- submissions: начни строго с «Принимают», «Не принимают» или «Неясно»; затем жанры,
+  способ подачи, ограничения, период приёма и прямой официальный URL.
+- Для каждой возможности укажи название, дедлайн, если опубликован, и прямой URL.
+- Если активных возможностей нет, напиши «Нет активных (проверено {today.isoformat()})».
+- Не используй просроченные возможности.
+- Не делай вывод по отсутствию информации. Если доказательств недостаточно, confident=false.
+- URL должен присутствовать среди SOURCE ниже. Ничего не выдумывай.
+
+Публикация: {row.name}
+Основной URL: {row.url}
+Текущие значения:
+OpenCall: {row.open_call}
+Awards: {row.awards}
+Submissions: {row.submissions}
+
+Официальные страницы:
+{pages}
+"""
+
+    response = OpenAI().responses.create(
+        model=model,
+        input=prompt,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "site_analysis",
+                "strict": True,
+                "schema": SCHEMA,
+            }
+        },
+    )
+    payload = json.loads(response.output_text)
+    return AnalysisResult(
+        confident=payload["confident"],
+        open_call=payload["open_call"].strip(),
+        awards=payload["awards"].strip(),
+        submissions=payload["submissions"].strip(),
+        new_opportunities=[str(item).strip() for item in payload["new_opportunities"]],
+    )
