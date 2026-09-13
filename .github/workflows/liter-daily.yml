@@ -52,9 +52,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: liter/.cache
-          key: liter-site-hashes-${{ github.run_id }}
+          key: liter-site-hashes-v2-${{ github.run_id }}
           restore-keys: |
-            liter-site-hashes-
+            liter-site-hashes-v2-
       - name: Check sites and update Google Sheet
         run: >-
           python liter/src/check_sites.py
