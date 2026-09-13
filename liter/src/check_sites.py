@@ -96,7 +96,10 @@ def _collect_all(rows: list[SheetRow], workers: int) -> dict[int, SiteEvidence]:
 
 
 def _change_item(row: SheetRow, value: str) -> str:
-    return f"• {row.url}\n{value.strip()}"
+    details = " ".join(value.split())
+    if len(details) > 90:
+        details = details[:89].rstrip() + "…"
+    return f"• {row.name or row.url}: {details}\n{row.url}"
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
@@ -133,12 +136,9 @@ def run() -> int:
     failures: list[str] = []
     new_items: list[str] = []
     changed_urls: list[str] = []
-    new_open_calls: list[str] = []
-    old_open_calls: list[str] = []
-    new_awards: list[str] = []
-    old_awards: list[str] = []
-    new_submissions: list[str] = []
-    old_submissions: list[str] = []
+    new_open_call_rows: set[int] = set()
+    new_award_rows: set[int] = set()
+    new_submission_rows: set[int] = set()
     ai_checked = 0
     unchanged = 0
     unclear = 0
@@ -176,19 +176,13 @@ def run() -> int:
             changes[row.row_number] = proposed
         if result.open_call != row.open_call:
             if result.open_call:
-                new_open_calls.append(_change_item(row, result.open_call))
-            if row.open_call:
-                old_open_calls.append(_change_item(row, row.open_call))
+                new_open_call_rows.add(row.row_number)
         if result.awards != row.awards:
             if result.awards:
-                new_awards.append(_change_item(row, result.awards))
-            if row.awards:
-                old_awards.append(_change_item(row, row.awards))
+                new_award_rows.add(row.row_number)
         if result.submissions != row.submissions:
             if _accepts_submissions(result.submissions):
-                new_submissions.append(_change_item(row, result.submissions))
-            if _accepts_submissions(row.submissions):
-                old_submissions.append(_change_item(row, row.submissions))
+                new_submission_rows.add(row.row_number)
         new_items.extend(result.new_opportunities)
 
     if changes:
@@ -199,6 +193,27 @@ def run() -> int:
         hash_cache_path,
         {url: site_hash for url, site_hash in site_hashes.items() if url in active_urls},
     )
+
+    new_open_calls: list[str] = []
+    old_open_calls: list[str] = []
+    new_awards: list[str] = []
+    old_awards: list[str] = []
+    new_submissions: list[str] = []
+    old_submissions: list[str] = []
+    for row in rows:
+        open_call, awards, submissions = changes.get(
+            row.row_number,
+            (row.open_call, row.awards, row.submissions),
+        )
+        if open_call:
+            target = new_open_calls if row.row_number in new_open_call_rows else old_open_calls
+            target.append(_change_item(row, open_call))
+        if awards:
+            target = new_awards if row.row_number in new_award_rows else old_awards
+            target.append(_change_item(row, awards))
+        if _accepts_submissions(submissions):
+            target = new_submissions if row.row_number in new_submission_rows else old_submissions
+            target.append(_change_item(row, submissions))
 
     stats_message = "\n".join([
         f"Литературный монитор: {checked_at:%Y-%m-%d}",
