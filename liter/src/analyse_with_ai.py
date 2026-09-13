@@ -62,7 +62,7 @@ def _compact_with_source(value: str, limit: int) -> str:
 
 def _compact_opportunities(value: str) -> str:
     lines = [line.strip() for line in value.splitlines() if line.strip()]
-    return "\n".join(_compact_with_source(line, 240) for line in lines)
+    return "\n".join(_compact_with_source(line, 320) for line in lines)
 
 
 def analyse_site(
@@ -91,8 +91,9 @@ def analyse_site(
   способ подачи, ограничения, период приёма и прямой официальный URL.
 - Для каждой возможности укажи название, дедлайн, если опубликован, и прямой URL.
 - Пиши предельно кратко, без пересказа общих правил сайта и без вводных фраз.
-- Каждую возможность в open_call и awards записывай с новой строки, максимум 240 символов:
-  «Название — дедлайн или “не указан” — прямой официальный URL».
+- Каждую возможность в open_call и awards записывай с новой строки, максимум 320 символов:
+  «Название — одно короткое предложение о сути, теме или допустимых текстах —
+  дедлайн или “не указан” — прямой официальный URL».
 - submissions: максимум 350 символов вместе с URL. Укажи только статус, принимаемые жанры
   или типы текстов, способ подачи, главное ограничение и период/дедлайн. Не перечисляй
   общие запреты платформы, требования законодательства и авторского права.
@@ -130,6 +131,6 @@ Submissions: {row.submissions}
         awards=_normalise_opportunity(_compact_opportunities(payload["awards"])),
         submissions=_compact_with_source(payload["submissions"], 350),
         new_opportunities=[
-            _compact_with_source(str(item), 240) for item in payload["new_opportunities"]
+            _compact_with_source(str(item), 320) for item in payload["new_opportunities"]
         ],
     )
