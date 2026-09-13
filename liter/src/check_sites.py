@@ -7,6 +7,7 @@ opportunities, updates only columns F:H, and sends a Telegram run summary.
 from __future__ import annotations
 
 import argparse
+import html
 import hashlib
 import json
 import os
@@ -95,8 +96,19 @@ def _collect_all(rows: list[SheetRow], workers: int) -> dict[int, SiteEvidence]:
     return evidence
 
 
-def _change_item(row: SheetRow, value: str) -> str:
-    return f"• {row.name or row.url}\n{value.strip()}"
+def _change_item(row: SheetRow, value: str, *, bold_labels: bool = False) -> str:
+    name = html.escape(row.name or row.url)
+    lines: list[str] = []
+    for raw_line in value.strip().splitlines():
+        line = html.escape(raw_line)
+        if bold_labels:
+            for label in ("Название", "Дедлайн", "Описание", "URL"):
+                prefix = f"{label}:"
+                if line.startswith(prefix):
+                    line = f"<b>{prefix}</b>{line[len(prefix):]}"
+                    break
+        lines.append(line)
+    return f"• {name}\n{'\n'.join(lines)}"
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
@@ -204,10 +216,10 @@ def run() -> int:
         )
         if open_call:
             target = new_open_calls if row.row_number in new_open_call_rows else old_open_calls
-            target.append(_change_item(row, open_call))
+            target.append(_change_item(row, open_call, bold_labels=True))
         if awards:
             target = new_awards if row.row_number in new_award_rows else old_awards
-            target.append(_change_item(row, awards))
+            target.append(_change_item(row, awards, bold_labels=True))
         if _accepts_submissions(submissions):
             target = new_submissions if row.row_number in new_submission_rows else old_submissions
             target.append(_change_item(row, submissions))
@@ -241,7 +253,7 @@ def run() -> int:
 
     summary = "\n\n".join(summary_lines)
     print(summary)
-    send_messages(telegram_messages)
+    send_messages(telegram_messages, parse_mode="HTML")
     return 0
 
 
