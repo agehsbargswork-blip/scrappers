@@ -16,6 +16,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from analyse_with_ai import analyse_site
@@ -34,6 +35,12 @@ DEADLINE_PATTERN = re.compile(
     r"|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|[^.;\n]+))",
     re.IGNORECASE,
 )
+DYNAMIC_HOME_PATHS = {
+    "prodaman.ru": {""},
+    "litnet.com": {"", "ru"},
+    "ficbook.net": {""},
+}
+TRACKING_QUERY_PREFIXES = ("utm_",)
 
 
 def _required_env(name: str) -> str:
@@ -45,13 +52,26 @@ def _required_env(name: str) -> str:
 
 def _evidence_hash(evidence: SiteEvidence) -> str:
     """Return a stable SHA-256 hash for the fetched pages of one site."""
+    pages_to_hash = evidence.pages
+    requested = urlsplit(evidence.requested_url)
+    requested_host = (requested.hostname or "").removeprefix("www.").casefold()
+    requested_path = requested.path.strip("/").casefold()
+    if (
+        requested_path in DYNAMIC_HOME_PATHS.get(requested_host, set())
+        and len(evidence.pages) > 1
+    ):
+        # These platforms have live rankings, counters, feeds and online statuses
+        # on their home pages. The home page is useful for discovering relevant
+        # links, but hashing it would trigger AI on almost every run.
+        pages_to_hash = evidence.pages[1:]
+
     pages = [
         {
             "url": page.url,
             "title": " ".join(page.title.split()),
             "text": " ".join(page.text.split()),
         }
-        for page in sorted(evidence.pages, key=lambda item: item.url)
+        for page in sorted(pages_to_hash, key=lambda item: item.url)
     ]
     payload = json.dumps(
         pages,
@@ -168,6 +188,60 @@ def _structure_opportunities(value: str) -> str:
     return "\n\n".join(blocks)
 
 
+def _opportunity_blocks(value: str) -> list[str]:
+    """Return one structured block per current opportunity."""
+    if not value.strip():
+        return []
+    structured = _structure_opportunities(value)
+    return [
+        block.strip()
+        for block in re.split(r"(?m)(?=^Название:\s*)", structured)
+        if block.strip()
+    ]
+
+
+def _canonical_url(value: str) -> str:
+    """Normalise harmless URL variations without merging distinct pages."""
+    parsed = urlsplit(value.rstrip(".,;"))
+    host = (parsed.hostname or "").removeprefix("www.").casefold()
+    port = f":{parsed.port}" if parsed.port else ""
+    path = re.sub(r"/{2,}", "/", parsed.path).rstrip("/") or "/"
+    query = urlencode(sorted([
+        (key, item)
+        for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.casefold().startswith(TRACKING_QUERY_PREFIXES)
+    ]))
+    return urlunsplit(("", host + port, path, query, ""))
+
+
+def _opportunity_identity(block: str) -> tuple[str, str]:
+    """Identify an opportunity by official URL plus official title/season."""
+    title = ""
+    source = ""
+    for line in block.splitlines():
+        if line.startswith("Название:"):
+            title = line.removeprefix("Название:").strip()
+        elif line.startswith("URL:"):
+            urls = URL_PATTERN.findall(line)
+            if urls:
+                source = _canonical_url(urls[-1])
+    normalised_title = " ".join(title.casefold().split()).strip(" -;,.[]()«»\"")
+    return source, normalised_title
+
+
+def _partition_opportunities(previous: str, current: str) -> tuple[list[str], list[str]]:
+    """Split current opportunities into new and already known blocks."""
+    previous_identities = {
+        _opportunity_identity(block) for block in _opportunity_blocks(previous)
+    }
+    new: list[str] = []
+    old: list[str] = []
+    for block in _opportunity_blocks(current):
+        target = old if _opportunity_identity(block) in previous_identities else new
+        target.append(block)
+    return new, old
+
+
 def _change_item(row: SheetRow, value: str, *, bold_labels: bool = False) -> str:
     name = html.escape(row.name or row.url)
     if bold_labels:
@@ -219,8 +293,6 @@ def run() -> int:
     failures: list[str] = []
     new_items: list[str] = []
     changed_urls: list[str] = []
-    new_open_call_rows: set[int] = set()
-    new_award_rows: set[int] = set()
     new_submission_rows: set[int] = set()
     ai_checked = 0
     unchanged = 0
@@ -257,12 +329,6 @@ def run() -> int:
         proposed = (result.open_call, result.awards, result.submissions)
         if proposed != (row.open_call, row.awards, row.submissions):
             changes[row.row_number] = proposed
-        if result.open_call != row.open_call:
-            if result.open_call:
-                new_open_call_rows.add(row.row_number)
-        if result.awards != row.awards:
-            if result.awards:
-                new_award_rows.add(row.row_number)
         if result.submissions != row.submissions:
             if _accepts_submissions(result.submissions):
                 new_submission_rows.add(row.row_number)
@@ -288,14 +354,24 @@ def run() -> int:
             row.row_number,
             (row.open_call, row.awards, row.submissions),
         )
-        if open_call:
-            if row.row_number in new_open_call_rows:
-                new_open_calls.append(_change_item(row, open_call, bold_labels=True))
-            else:
-                old_open_calls.append(_change_item(row, open_call, bold_labels=True))
-        if awards:
-            target = new_awards if row.row_number in new_award_rows else old_awards
-            target.append(_change_item(row, awards, bold_labels=True))
+        row_new_open_calls, row_old_open_calls = _partition_opportunities(
+            row.open_call,
+            open_call,
+        )
+        new_open_calls.extend(
+            _change_item(row, block, bold_labels=True) for block in row_new_open_calls
+        )
+        old_open_calls.extend(
+            _change_item(row, block, bold_labels=True) for block in row_old_open_calls
+        )
+
+        row_new_awards, row_old_awards = _partition_opportunities(row.awards, awards)
+        new_awards.extend(
+            _change_item(row, block, bold_labels=True) for block in row_new_awards
+        )
+        old_awards.extend(
+            _change_item(row, block, bold_labels=True) for block in row_old_awards
+        )
         if _accepts_submissions(submissions):
             target = new_submissions if row.row_number in new_submission_rows else old_submissions
             target.append(_change_item(row, submissions))
