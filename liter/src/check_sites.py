@@ -137,6 +137,10 @@ def run() -> int:
             failures.append(f"{row.name or row.url}: AI — {type(exc).__name__}: {exc}")
             continue
 
+        # Cache every successfully analysed page, including ambiguous results.
+        # Otherwise unchanged ambiguous sites would be sent to the AI again daily.
+        site_hashes[row.url] = current_hash
+
         if not result.confident:
             failures.append(f"{row.name or row.url}: неоднозначные данные; старые значения сохранены")
             continue
@@ -145,7 +149,6 @@ def run() -> int:
         if proposed != (row.open_call, row.awards, row.submissions):
             changes[row.row_number] = proposed
         new_items.extend(result.new_opportunities)
-        site_hashes[row.url] = current_hash
 
     if changes:
         update_rows(spreadsheet_id, sheet_name, changes)
