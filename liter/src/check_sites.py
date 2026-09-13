@@ -10,7 +10,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -25,7 +24,6 @@ from web_reader import SiteEvidence, collect_site_evidence
 
 RIGA = ZoneInfo("Europe/Riga")
 DEFAULT_HASH_CACHE = Path("liter/.cache/site_hashes.json")
-URL_PATTERN = re.compile(r"https?://[^\s)\]]+")
 
 
 def _required_env(name: str) -> str:
@@ -97,13 +95,8 @@ def _collect_all(rows: list[SheetRow], workers: int) -> dict[int, SiteEvidence]:
     return evidence
 
 
-def _change_item(row: SheetRow, value: str, detail_limit: int = 90) -> str:
-    urls = URL_PATTERN.findall(value)
-    source = urls[0].rstrip(".,;") if urls else row.url
-    details = " ".join(URL_PATTERN.sub("", value).split()).strip(" -;,.[]()")
-    if len(details) > detail_limit:
-        details = details[: detail_limit - 1].rstrip() + "…"
-    return f"• {row.name or row.url}: {details}\n{source}"
+def _change_item(row: SheetRow, value: str) -> str:
+    return f"• {row.name or row.url}\n{value.strip()}"
 
 
 def _change_message(title: str, new: list[str], old: list[str]) -> str:
@@ -211,10 +204,10 @@ def run() -> int:
         )
         if open_call:
             target = new_open_calls if row.row_number in new_open_call_rows else old_open_calls
-            target.append(_change_item(row, open_call, 120))
+            target.append(_change_item(row, open_call))
         if awards:
             target = new_awards if row.row_number in new_award_rows else old_awards
-            target.append(_change_item(row, awards, 120))
+            target.append(_change_item(row, awards))
         if _accepts_submissions(submissions):
             target = new_submissions if row.row_number in new_submission_rows else old_submissions
             target.append(_change_item(row, submissions))
