@@ -36,6 +36,9 @@ for module_name, attributes in {
 
 from check_sites import _evidence_hash, _partition_opportunities  # noqa: E402
 
+for module_name in ("analyse_with_ai", "google_sheet", "telegram", "web_reader"):
+    sys.modules.pop(module_name, None)
+
 
 def page(url: str, title: str, text: str):
     return SimpleNamespace(url=url, title=title, text=text)

@@ -50,13 +50,24 @@ jobs:
           cache-dependency-path: liter/requirements.txt
       - run: python -m pip install --requirement liter/requirements.txt
       - name: Restore site hash cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: liter/.cache
           key: liter-site-hashes-v2-${{ github.run_id }}
           restore-keys: |
             liter-site-hashes-v2-
       - name: Check sites and update Google Sheet
+        id: monitor
+        continue-on-error: true
         run: >-
           python liter/src/check_sites.py
           ${{ github.event_name == 'schedule' && '--scheduled' || '' }}
+      - name: Save site hash cache
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: liter/.cache
+          key: liter-site-hashes-v2-${{ github.run_id }}
+      - name: Preserve monitor failure status
+        if: steps.monitor.outcome == 'failure'
+        run: exit 1
