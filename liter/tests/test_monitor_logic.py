@@ -7,6 +7,7 @@ import types
 import unittest
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 
@@ -38,7 +39,9 @@ for module_name, attributes in {
 from check_sites import (  # noqa: E402
     _change_message,
     _evidence_hash,
+    _mark_scheduled_run_completed,
     _partition_opportunities,
+    _scheduled_run_already_completed,
     _stats_message,
     _unclear_message,
 )
@@ -93,6 +96,25 @@ class EvidenceHashTests(unittest.TestCase):
             [page("https://prodaman.ru/", "Главная", "счётчик 2")],
         )
         self.assertNotEqual(_evidence_hash(before), _evidence_hash(after))
+
+
+class ScheduledRunMarkerTests(unittest.TestCase):
+    def test_marker_skips_only_the_same_calendar_date(self):
+        with TemporaryDirectory() as directory:
+            marker = Path(directory) / "last_scheduled_run.txt"
+            first_run = datetime(2026, 9, 14, 8, 15)
+            next_day = datetime(2026, 9, 15, 7, 55)
+
+            self.assertFalse(_scheduled_run_already_completed(marker, first_run))
+
+            _mark_scheduled_run_completed(marker, first_run)
+
+            self.assertTrue(_scheduled_run_already_completed(marker, first_run))
+            self.assertFalse(_scheduled_run_already_completed(marker, next_day))
+            self.assertEqual(
+                marker.read_text(encoding="utf-8"),
+                "2026-09-14\n",
+            )
 
 
 class OpportunityClassificationTests(unittest.TestCase):
