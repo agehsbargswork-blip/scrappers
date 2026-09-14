@@ -27,6 +27,7 @@ from web_reader import SiteEvidence, collect_site_evidence
 
 RIGA = ZoneInfo("Europe/Riga")
 DEFAULT_HASH_CACHE = Path("liter/.cache/site_hashes.json")
+DEFAULT_DAILY_RUN_MARKER = Path("liter/.cache/last_scheduled_run.txt")
 URL_PATTERN = re.compile(r"https?://[^\s)\]]+")
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\((https?://[^)\s]+)\)")
 DEADLINE_PATTERN = re.compile(
@@ -105,6 +106,21 @@ def _save_hash_cache(path: Path, hashes: dict[str, str]) -> None:
         json.dumps(hashes, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+    temporary.replace(path)
+
+
+def _scheduled_run_already_completed(path: Path, checked_at: datetime) -> bool:
+    try:
+        completed_date = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return completed_date == checked_at.date().isoformat()
+
+
+def _mark_scheduled_run_completed(path: Path, checked_at: datetime) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(checked_at.date().isoformat() + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
@@ -303,7 +319,7 @@ def _accepts_submissions(value: str) -> bool:
     return value.strip().casefold().startswith("принимают")
 
 
-def run() -> int:
+def run(*, scheduled_marker_path: Path | None = None) -> int:
     spreadsheet_id = os.getenv(
         "GOOGLE_SPREADSHEET_ID",
         "18vAZy_ftbN9wXRuwcXPUzrlTO8wHlGsUlzEppEO3Jok",
@@ -380,6 +396,10 @@ def run() -> int:
         hash_cache_path,
         {url: site_hash for url, site_hash in site_hashes.items() if url in active_urls},
     )
+    if scheduled_marker_path is not None:
+        # The site scan and Sheet update completed. Mark the day before Telegram
+        # delivery so a temporary Telegram error cannot trigger duplicate AI work.
+        _mark_scheduled_run_completed(scheduled_marker_path, checked_at)
 
     new_open_calls: list[str] = []
     old_open_calls: list[str] = []
@@ -453,16 +473,28 @@ def main() -> int:
     parser.add_argument(
         "--scheduled",
         action="store_true",
-        help="Run only when the current Europe/Riga hour is 08.",
+        help="Run at most once per Europe/Riga calendar date.",
     )
     args = parser.parse_args()
 
-    if args.scheduled and datetime.now(RIGA).hour != 8:
-        print("Skipping duplicate UTC cron slot; it is not 08:00 in Europe/Riga.")
+    checked_at = datetime.now(RIGA)
+    scheduled_marker_path = Path(
+        os.getenv("SCHEDULED_RUN_MARKER", str(DEFAULT_DAILY_RUN_MARKER))
+    )
+    if args.scheduled and _scheduled_run_already_completed(
+        scheduled_marker_path,
+        checked_at,
+    ):
+        print(
+            "Skipping scheduled run: "
+            f"{checked_at.date().isoformat()} was already completed."
+        )
         return 0
 
     try:
-        return run()
+        return run(
+            scheduled_marker_path=scheduled_marker_path if args.scheduled else None
+        )
     except Exception as exc:
         message = f"Литературный монитор не запустился: {type(exc).__name__}: {exc}"
         print(message, file=sys.stderr)
