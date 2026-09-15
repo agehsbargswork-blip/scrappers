@@ -13,8 +13,8 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: "15 8 * * *"
-      timezone: "Europe/Riga"
+    - cron: "41 3 * * *"
+      timezone: "Etc/UTC"
 
 permissions:
   contents: read
