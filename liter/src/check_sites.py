@@ -21,13 +21,14 @@ from zoneinfo import ZoneInfo
 
 from analyse_with_ai import analyse_site
 from google_sheet import SheetRow, read_rows, update_rows
-from telegram import send_message, send_messages
+from telegram import send_message
 from web_reader import SiteEvidence, collect_site_evidence
 
 
 RIGA = ZoneInfo("Europe/Riga")
 DEFAULT_HASH_CACHE = Path("liter/.cache/site_hashes.json")
 DEFAULT_DAILY_RUN_MARKER = Path("liter/.cache/last_scheduled_run.txt")
+DEFAULT_TELEGRAM_OUTBOX = Path("liter/.cache/pending_telegram.json")
 URL_PATTERN = re.compile(r"https?://[^\s)\]]+")
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\((https?://[^)\s]+)\)")
 DEADLINE_PATTERN = re.compile(
@@ -122,6 +123,73 @@ def _mark_scheduled_run_completed(path: Path, checked_at: datetime) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(checked_at.date().isoformat() + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def _load_telegram_outbox(path: Path) -> tuple[list[str], str | None]:
+    """Load a durable batch of Telegram messages awaiting delivery."""
+    if not path.exists():
+        return [], None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot read Telegram outbox {path}: {exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("messages"), list):
+        raise RuntimeError(f"Invalid Telegram outbox format: {path}")
+    messages = payload["messages"]
+    if not all(isinstance(message, str) for message in messages):
+        raise RuntimeError(f"Invalid Telegram messages in outbox: {path}")
+    raw_parse_mode = payload.get("parse_mode")
+    if raw_parse_mode is not None and not isinstance(raw_parse_mode, str):
+        raise RuntimeError(f"Invalid Telegram parse mode in outbox: {path}")
+    return messages, raw_parse_mode
+
+
+def _clear_telegram_outbox(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _save_telegram_outbox(
+    path: Path,
+    messages: list[str],
+    *,
+    parse_mode: str | None,
+) -> None:
+    """Atomically persist messages before attempting Telegram delivery."""
+    if not messages:
+        _clear_telegram_outbox(path)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(
+            {"messages": messages, "parse_mode": parse_mode},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _deliver_telegram_outbox(path: Path) -> bool:
+    """Deliver pending messages and checkpoint progress after every message."""
+    messages, parse_mode = _load_telegram_outbox(path)
+    if not messages:
+        _clear_telegram_outbox(path)
+        return False
+
+    for index, message in enumerate(messages):
+        send_message(message, parse_mode=parse_mode)
+        _save_telegram_outbox(
+            path,
+            messages[index + 1 :],
+            parse_mode=parse_mode,
+        )
+    return True
 
 
 def _collect_all(rows: list[SheetRow], workers: int) -> dict[int, SiteEvidence]:
@@ -319,7 +387,11 @@ def _accepts_submissions(value: str) -> bool:
     return value.strip().casefold().startswith("принимают")
 
 
-def run(*, scheduled_marker_path: Path | None = None) -> int:
+def run(
+    *,
+    scheduled_marker_path: Path | None = None,
+    telegram_outbox_path: Path = DEFAULT_TELEGRAM_OUTBOX,
+) -> int:
     spreadsheet_id = os.getenv(
         "GOOGLE_SPREADSHEET_ID",
         "18vAZy_ftbN9wXRuwcXPUzrlTO8wHlGsUlzEppEO3Jok",
@@ -396,11 +468,6 @@ def run(*, scheduled_marker_path: Path | None = None) -> int:
         hash_cache_path,
         {url: site_hash for url, site_hash in site_hashes.items() if url in active_urls},
     )
-    if scheduled_marker_path is not None:
-        # The site scan and Sheet update completed. Mark the day before Telegram
-        # delivery so a temporary Telegram error cannot trigger duplicate AI work.
-        _mark_scheduled_run_completed(scheduled_marker_path, checked_at)
-
     new_open_calls: list[str] = []
     old_open_calls: list[str] = []
     new_awards: list[str] = []
@@ -449,6 +516,17 @@ def run(*, scheduled_marker_path: Path | None = None) -> int:
         _unclear_message(unclear_rows),
     ]
 
+    # Persist the complete report before marking this day's scan as complete.
+    # If Telegram fails, a later scheduled attempt sends this outbox without
+    # fetching sites or calling the AI again.
+    _save_telegram_outbox(
+        telegram_outbox_path,
+        telegram_messages,
+        parse_mode="HTML",
+    )
+    if scheduled_marker_path is not None:
+        _mark_scheduled_run_completed(scheduled_marker_path, checked_at)
+
     summary_lines = [*telegram_messages, f"Изменено строк: {len(changes)}"]
     if changed_urls:
         summary_lines.append("Изменившийся SHA-256:")
@@ -464,7 +542,7 @@ def run(*, scheduled_marker_path: Path | None = None) -> int:
 
     summary = "\n\n".join(summary_lines)
     print(summary)
-    send_messages(telegram_messages, parse_mode="HTML")
+    _deliver_telegram_outbox(telegram_outbox_path)
     return 0
 
 
@@ -481,24 +559,42 @@ def main() -> int:
     scheduled_marker_path = Path(
         os.getenv("SCHEDULED_RUN_MARKER", str(DEFAULT_DAILY_RUN_MARKER))
     )
-    if args.scheduled and _scheduled_run_already_completed(
-        scheduled_marker_path,
-        checked_at,
-    ):
-        print(
-            "Skipping scheduled run: "
-            f"{checked_at.date().isoformat()} was already completed."
-        )
-        return 0
+    telegram_outbox_path = Path(
+        os.getenv("TELEGRAM_OUTBOX", str(DEFAULT_TELEGRAM_OUTBOX))
+    )
 
     try:
+        delivered_pending = _deliver_telegram_outbox(telegram_outbox_path)
+        if delivered_pending:
+            print("Delivered pending Telegram report.")
+
+        if args.scheduled and _scheduled_run_already_completed(
+            scheduled_marker_path,
+            checked_at,
+        ):
+            print(
+                "Skipping scheduled run: "
+                f"{checked_at.date().isoformat()} was already completed."
+            )
+            return 0
+
         return run(
-            scheduled_marker_path=scheduled_marker_path if args.scheduled else None
+            scheduled_marker_path=scheduled_marker_path if args.scheduled else None,
+            telegram_outbox_path=telegram_outbox_path,
         )
     except Exception as exc:
         message = f"Литературный монитор не запустился: {type(exc).__name__}: {exc}"
         print(message, file=sys.stderr)
-        send_message(message)
+        # Do not overwrite or bypass an existing report that still needs delivery.
+        if not telegram_outbox_path.exists():
+            try:
+                send_message(message)
+            except Exception as telegram_exc:
+                print(
+                    "Не удалось отправить сообщение об ошибке в Telegram: "
+                    f"{type(telegram_exc).__name__}: {telegram_exc}",
+                    file=sys.stderr,
+                )
         return 1
 
 
