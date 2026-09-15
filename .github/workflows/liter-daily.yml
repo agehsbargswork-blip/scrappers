@@ -6,6 +6,12 @@ on:
       - "liter/**"
       - ".github/workflows/liter-daily.yml"
   workflow_dispatch:
+    inputs:
+      scheduled_run:
+        description: "Treat this dispatch as a daily scheduled attempt"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "15 8 * * *"
       timezone: "Europe/Riga"
@@ -32,6 +38,9 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    concurrency:
+      group: literature-monitor
+      queue: max
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -61,7 +70,7 @@ jobs:
         continue-on-error: true
         run: >-
           python liter/src/check_sites.py
-          ${{ github.event_name == 'schedule' && '--scheduled' || '' }}
+          ${{ (github.event_name == 'schedule' || inputs.scheduled_run) && '--scheduled' || '' }}
       - name: Save site hash cache
         if: always()
         uses: actions/cache/save@v6
