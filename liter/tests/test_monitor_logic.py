@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
@@ -38,9 +39,12 @@ for module_name, attributes in {
 
 from check_sites import (  # noqa: E402
     _change_message,
+    _deliver_telegram_outbox,
     _evidence_hash,
+    _load_telegram_outbox,
     _mark_scheduled_run_completed,
     _partition_opportunities,
+    _save_telegram_outbox,
     _scheduled_run_already_completed,
     _stats_message,
     _unclear_message,
@@ -115,6 +119,47 @@ class ScheduledRunMarkerTests(unittest.TestCase):
                 marker.read_text(encoding="utf-8"),
                 "2026-09-14\n",
             )
+
+
+class TelegramOutboxTests(unittest.TestCase):
+    def test_failed_delivery_keeps_current_and_later_messages(self):
+        with TemporaryDirectory() as directory:
+            outbox = Path(directory) / "pending_telegram.json"
+            _save_telegram_outbox(
+                outbox,
+                ["first", "second", "third"],
+                parse_mode="HTML",
+            )
+
+            with patch(
+                "check_sites.send_message",
+                side_effect=[None, RuntimeError("Telegram unavailable")],
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Telegram unavailable"):
+                    _deliver_telegram_outbox(outbox)
+
+            messages, parse_mode = _load_telegram_outbox(outbox)
+            self.assertEqual(messages, ["second", "third"])
+            self.assertEqual(parse_mode, "HTML")
+
+            with patch("check_sites.send_message") as send:
+                self.assertTrue(_deliver_telegram_outbox(outbox))
+
+            self.assertFalse(outbox.exists())
+            self.assertEqual(
+                [item.args[0] for item in send.call_args_list],
+                ["second", "third"],
+            )
+            self.assertTrue(
+                all(item.kwargs["parse_mode"] == "HTML" for item in send.call_args_list)
+            )
+
+    def test_missing_outbox_has_nothing_to_deliver(self):
+        with TemporaryDirectory() as directory:
+            outbox = Path(directory) / "pending_telegram.json"
+            with patch("check_sites.send_message") as send:
+                self.assertFalse(_deliver_telegram_outbox(outbox))
+            send.assert_not_called()
 
 
 class OpportunityClassificationTests(unittest.TestCase):
