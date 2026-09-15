@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: "41 3 * * *"
+    - cron: "41 15 * * *"
       timezone: "Etc/UTC"
 
 permissions:
